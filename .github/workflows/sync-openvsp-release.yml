@@ -1,0 +1,191 @@
+name: Sync official OpenVSP release
+
+'on':
+  schedule:
+    # Daily at 09:17 Asia/Taipei (01:17 UTC); avoid the busy top of the hour.
+    - cron: '17 1 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Inspect without changing branches or tags
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-official-openvsp-release
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'rhyne1012/OpenVSP'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Synchronize the latest official version and verify refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+        shell: python
+        run: |
+          import base64
+          import datetime as dt
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          UPSTREAM = "OpenVSP/OpenVSP"
+          TARGET = "rhyne1012/OpenVSP"
+          RELEASE_BRANCH = "official-release"
+          STATUS_PATH = ".github/openvsp-sync-status.json"
+          VERSION = re.compile(r"OpenVSP_(\d+)\.(\d+)\.(\d+)\Z")
+
+
+          def version(name):
+              match = VERSION.fullmatch(name)
+              return tuple(map(int, match.groups())) if match else None
+
+
+          def api(method, path, body=None, optional=False):
+              headers = {
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "User-Agent": "openvsp-release-sync",
+              }
+              token = os.environ.get("GH_TOKEN")
+              if token:
+                  headers["Authorization"] = "Bearer " + token
+              data = None if body is None else json.dumps(body).encode()
+              if data is not None:
+                  headers["Content-Type"] = "application/json"
+              request = urllib.request.Request(
+                  "https://api.github.com" + path, data=data, headers=headers, method=method
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=45) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as error:
+                  if optional and error.code == 404:
+                      return None
+                  raise RuntimeError(f"GitHub API {method} {path}: HTTP {error.code}") from None
+
+
+          def ref(repo, name, optional=False):
+              return api("GET", f"/repos/{repo}/git/ref/{name}", optional=optional)
+
+
+          def main():
+              if os.environ.get("GITHUB_REPOSITORY", TARGET) != TARGET:
+                  raise RuntimeError("This workflow is restricted to " + TARGET)
+              dry_run = os.environ.get("DRY_RUN", "false").lower() == "true"
+              if not dry_run and not os.environ.get("GH_TOKEN"):
+                  raise RuntimeError("A repository GITHUB_TOKEN is required for writes")
+              metadata = api("GET", f"/repos/{TARGET}")
+              if not metadata.get("fork") or metadata.get("parent", {}).get("full_name") != UPSTREAM:
+                  raise RuntimeError("Target must be a direct fork of " + UPSTREAM)
+              default = metadata["default_branch"]
+              if default == RELEASE_BRANCH:
+                  raise RuntimeError("The automation default branch must differ from official-release")
+
+              tags = []
+              page = 1
+              while True:
+                  batch = api("GET", f"/repos/{UPSTREAM}/tags?per_page=100&page={page}")
+                  tags.extend(t for t in batch if version(t["name"]) is not None)
+                  if len(batch) < 100:
+                      break
+                  page += 1
+              if not tags:
+                  raise RuntimeError("No official numeric release tags found")
+              latest = max(tags, key=lambda t: version(t["name"]))
+              tag, commit = latest["name"], latest["commit"]["sha"]
+              upstream_ref = ref(UPSTREAM, "tags/" + tag)
+              obj = upstream_ref["object"]
+              # Preserve annotated tag objects; never replace them with lightweight tags.
+              for _ in range(10):
+                  if obj["type"] == "commit":
+                      break
+                  if obj["type"] != "tag":
+                      raise RuntimeError("Release tag does not point to a commit")
+                  obj = api("GET", f"/repos/{UPSTREAM}/git/tags/{obj['sha']}")["object"]
+              if obj["type"] != "commit" or obj["sha"] != commit:
+                  raise RuntimeError("Upstream tag changed during inspection; retry the workflow")
+
+              existing_tag = ref(TARGET, "tags/" + tag, optional=True)
+              existing_branch = ref(TARGET, "heads/" + RELEASE_BRANCH, optional=True)
+              if existing_tag and any(
+                  existing_tag["object"][key] != upstream_ref["object"][key]
+                  for key in ("sha", "type")
+              ):
+                  raise RuntimeError("Existing release tag differs from upstream; refusing to overwrite")
+              status_url = f"/repos/{TARGET}/contents/{STATUS_PATH}"
+              status_file = api("GET", status_url + "?ref=" + urllib.parse.quote(default, safe=""), optional=True)
+              status = json.loads(base64.b64decode(status_file["content"])) if status_file else {}
+              if status:
+                  previous = version(status["tag"])
+                  if previous is None or previous > version(tag):
+                      raise RuntimeError("Refusing to downgrade the recorded release")
+              branch_changed = not existing_branch or existing_branch["object"]["sha"] != commit
+              if existing_branch and branch_changed:
+                  old = existing_branch["object"]["sha"]
+                  comparison = api("GET", f"/repos/{TARGET}/compare/{old}...{commit}?per_page=1")
+                  if comparison["status"] != "ahead" or comparison["behind_by"] != 0:
+                      raise RuntimeError("official-release has diverged; refusing to overwrite local changes")
+
+              now = dt.datetime.now(dt.timezone.utc)
+              last = dt.datetime.fromisoformat(status["checked_at"]) if status else None
+              refresh = (
+                  status.get("tag") != tag or status.get("commit") != commit
+                  or last is None or now - last >= dt.timedelta(days=30)
+              )
+              print(f"Latest official release: {tag} ({commit})")
+              print(f"Dry run: {dry_run}; create tag: {not bool(existing_tag)}; update branch: {branch_changed}; refresh activity record: {refresh}")
+              if not dry_run:
+                  # Objects are shared within the GitHub fork network. No source checkout,
+                  # compilation, external action or personal access token is needed.
+                  if not existing_tag:
+                      api("POST", f"/repos/{TARGET}/git/refs", {
+                          "ref": "refs/tags/" + tag, "sha": upstream_ref["object"]["sha"]
+                      })
+                  if not existing_branch:
+                      api("POST", f"/repos/{TARGET}/git/refs", {
+                          "ref": "refs/heads/" + RELEASE_BRANCH, "sha": commit
+                      })
+                  elif branch_changed:
+                      api("PATCH", f"/repos/{TARGET}/git/refs/heads/{RELEASE_BRANCH}", {
+                          "sha": commit, "force": False
+                      })
+                  if ref(TARGET, "heads/" + RELEASE_BRANCH)["object"]["sha"] != commit:
+                      raise RuntimeError("Release branch verification failed")
+                  if ref(TARGET, "tags/" + tag)["object"]["sha"] != upstream_ref["object"]["sha"]:
+                      raise RuntimeError("Release tag verification failed")
+                  if refresh:
+                      record = {"upstream": UPSTREAM, "tag": tag, "commit": commit, "checked_at": now.isoformat()}
+                      body = {
+                          "message": f"chore: record OpenVSP release sync ({tag})",
+                          "content": base64.b64encode((json.dumps(record, indent=2) + "\n").encode()).decode(),
+                          "branch": default,
+                      }
+                      if status_file:
+                          body["sha"] = status_file["sha"]
+                      api("PUT", status_url, body)
+              summary = (
+                  f"## OpenVSP release sync\n\n"
+                  f"- Mode: {'dry run (no changes)' if dry_run else 'synchronized and verified'}\n"
+                  f"- Version: [{tag}](https://github.com/{UPSTREAM}/tree/{tag})\n"
+                  f"- Commit: `{commit}`\n"
+                  f"- Source: [official-release](https://github.com/{TARGET}/tree/{RELEASE_BRANCH})\n"
+                  f"- Activity record refreshed: {refresh and not dry_run}\n"
+              )
+              if os.environ.get("GITHUB_STEP_SUMMARY"):
+                  with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
+                      stream.write(summary)
+
+
+          if __name__ == "__main__":
+              main()
