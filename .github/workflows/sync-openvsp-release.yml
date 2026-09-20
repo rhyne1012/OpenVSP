@@ -27,6 +27,7 @@ jobs:
       - name: Synchronize the latest official version and verify refs
         env:
           GH_TOKEN: ${{ github.token }}
+          REF_WRITE_TOKEN: ${{ secrets.OPENVSP_SYNC_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
         shell: python
         run: |
@@ -58,6 +59,8 @@ jobs:
                   "User-Agent": "openvsp-release-sync",
               }
               token = os.environ.get("GH_TOKEN")
+              if method in ("POST", "PATCH") and path.startswith(f"/repos/{TARGET}/git/refs"):
+                  token = os.environ.get("REF_WRITE_TOKEN") or token
               if token:
                   headers["Authorization"] = "Bearer " + token
               data = None if body is None else json.dumps(body).encode()
@@ -147,8 +150,9 @@ jobs:
               print(f"Latest official release: {tag} ({commit})")
               print(f"Dry run: {dry_run}; create tag: {not bool(existing_tag)}; update branch: {branch_changed}; refresh activity record: {refresh}")
               if not dry_run:
-                  # Objects are shared within the GitHub fork network. No source checkout,
-                  # compilation, external action or personal access token is needed.
+                  # Objects are shared within the GitHub fork network. No source checkout
+                  # or compilation is needed. Changed workflows may require the narrowly
+                  # scoped OPENVSP_SYNC_TOKEN secret (Contents + Workflows write).
                   if not existing_tag:
                       api("POST", f"/repos/{TARGET}/git/refs", {
                           "ref": "refs/tags/" + tag, "sha": upstream_ref["object"]["sha"]
