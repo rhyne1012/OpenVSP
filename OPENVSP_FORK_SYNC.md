@@ -10,7 +10,27 @@
 - 每天 **Asia/Taipei 09:17（UTC 01:17）**檢查；GitHub 繁忙時可能延遲。
 - 在 Actions 選擇此工作流程，按 **Run workflow** 可立即執行。
 - 勾選 **Inspect without changing branches or tags** 可先做唯讀檢查。
-- 使用 GitHub 自動提供、限本儲存庫的 `GITHUB_TOKEN`；不需要個人存取權杖。
+- 一般讀取與維護紀錄使用 GitHub 自動提供、限本儲存庫的 `GITHUB_TOKEN`。
+- 匯入版本分支／tag 時，優先使用 `OPENVSP_SYNC_TOKEN` secret；未設定則使用內建權杖。
+  若上游版本包含 GitHub Actions 檔案變更，內建權杖可能被 GitHub 拒絕（HTTP 403）。
+  為使這類新版也能自動同步，請完成下方的一次性權杖設定。
+
+## 一次性權杖設定
+
+由帳號擁有者建立 **fine-grained personal access token**：
+
+1. Resource owner：`rhyne1012`。
+2. Repository access：**Only select repositories**，只選 **OpenVSP**。
+3. Repository permissions：**Contents — Read and write**、**Workflows — Read and write**。
+   不需要帳號或其他儲存庫權限；Metadata read 由 GitHub 自動附加。
+4. 選擇到期日，並在到期前更換權杖。
+5. 在本 repo 的 **Settings → Secrets and variables → Actions → New repository secret**，
+   名稱填 `OPENVSP_SYNC_TOKEN`，值填剛建立的權杖。
+6. 回 Actions 手動執行一次本工作流程；確認結果為成功後，日後依排程執行。
+
+權杖只存 GitHub 加密 secret，不放在原始碼、說明文件或對話中。
+它只用於本 fork 的分支／tag 寫入，不用於 upstream 寫入。
+GitHub 的權限範圍為整個選定儲存庫，不能進一步限制成只寫一個分支。
 
 ## 同步規則
 
@@ -39,7 +59,7 @@ GitHub 可能在公開儲存庫連續 60 天沒有活動時停用排程。因此
 ## 暫停及復原
 
 - 暫停：Actions → 此工作流程 → 選單 → **Disable workflow**。
-- 要使用舊版：切換到已保存的版本 tag，或从该 tag 建立自己的分支。
+- 要使用舊版：切換到已保存的版本 tag，或從該 tag 建立自己的分支。
 - 不要直接修改 `official-release`；它專門用於官方版本快轉。
 - 不要把 `official-release` 設為預設分支；排程必須留在含工作流程的 `main`。
 - 設定前 `main` 基準為 `73d3b99341e035d7d3316e20105e98dcbe1c6033`（OpenVSP 3.43.0），歷史保留。
