@@ -72,7 +72,8 @@ jobs:
               except urllib.error.HTTPError as error:
                   if optional and error.code == 404:
                       return None
-                  raise RuntimeError(f"GitHub API {method} {path}: HTTP {error.code}") from None
+                  detail = json.loads(error.read()).get("message", "")
+                  raise RuntimeError(f"GitHub API {method} {path}: HTTP {error.code}: {detail}") from None
 
 
           def ref(repo, name, optional=False):
