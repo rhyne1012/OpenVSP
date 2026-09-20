@@ -149,6 +149,7 @@ jobs:
               )
               print(f"Latest official release: {tag} ({commit})")
               print(f"Dry run: {dry_run}; create tag: {not bool(existing_tag)}; update branch: {branch_changed}; refresh activity record: {refresh}")
+              verify_token = bool(os.environ.get("REF_WRITE_TOKEN")) and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
               if not dry_run:
                   # Objects are shared within the GitHub fork network. No source checkout
                   # or compilation is needed. Changed workflows may require the narrowly
@@ -161,7 +162,9 @@ jobs:
                       api("POST", f"/repos/{TARGET}/git/refs", {
                           "ref": "refs/heads/" + RELEASE_BRANCH, "sha": commit
                       })
-                  elif branch_changed:
+                  elif branch_changed or verify_token:
+                      # A manual run also exercises the saved credential when already up
+                      # to date. The same-SHA, non-forced update preserves the branch.
                       api("PATCH", f"/repos/{TARGET}/git/refs/heads/{RELEASE_BRANCH}", {
                           "sha": commit, "force": False
                       })
@@ -169,6 +172,8 @@ jobs:
                       raise RuntimeError("Release branch verification failed")
                   if ref(TARGET, "tags/" + tag)["object"]["sha"] != upstream_ref["object"]["sha"]:
                       raise RuntimeError("Release tag verification failed")
+                  if verify_token:
+                      print("Dedicated sync token: authenticated reference write verified")
                   if refresh:
                       record = {"upstream": UPSTREAM, "tag": tag, "commit": commit, "checked_at": now.isoformat()}
                       body = {
@@ -186,6 +191,7 @@ jobs:
                   f"- Commit: `{commit}`\n"
                   f"- Source: [official-release](https://github.com/{TARGET}/tree/{RELEASE_BRANCH})\n"
                   f"- Activity record refreshed: {refresh and not dry_run}\n"
+                  f"- Dedicated token write check: {'passed' if verify_token and not dry_run else 'not requested'}\n"
               )
               if os.environ.get("GITHUB_STEP_SUMMARY"):
                   with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
