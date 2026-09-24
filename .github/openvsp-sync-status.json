@@ -1,6 +1,6 @@
 {
   "upstream": "OpenVSP/OpenVSP",
-  "tag": "OpenVSP_3.52.1",
-  "commit": "2ddba18ecacb4a2bb0af92705fcfb223d57693b9",
-  "checked_at": "2026-09-20T21:11:39.247254+00:00"
+  "tag": "OpenVSP_3.52.2",
+  "commit": "8782f46d4399ac04d0a1277d414246bb37035666",
+  "checked_at": "2026-09-24T06:11:59.390669+00:00"
 }
